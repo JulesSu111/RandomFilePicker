@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import config
-from app import explorer_select_command
+from app import PoolUpdateState, explorer_select_command
 from picker import FileScanner, RandomPicker, normalize_extension
 
 
@@ -49,6 +49,31 @@ class PickerTests(unittest.TestCase):
     def test_explorer_select_keeps_switch_and_unicode_path_separate(self):
         path = "D:\\Study\\Course A\\Kapitel, Eins\\页面 17.png"
         self.assertEqual(explorer_select_command(path), ["explorer.exe", "/select,", path])
+
+    def test_pool_cannot_select_while_updating_or_empty(self):
+        state = PoolUpdateState()
+        self.assertFalse(state.can_select())
+        generation = state.request()
+        self.assertFalse(state.can_select())
+        state.commit(generation, [])
+        self.assertFalse(state.can_select())
+
+    def test_obsolete_generation_cannot_overwrite_newest_pool(self):
+        state = PoolUpdateState()
+        old = state.request()
+        newest = state.request()
+        self.assertFalse(state.commit(old, ["old.pdf"]))
+        self.assertTrue(state.commit(newest, ["new.pdf"]))
+        self.assertEqual(state.paths, ["new.pdf"])
+        self.assertTrue(state.can_select())
+
+    def test_final_generation_wins_after_rapid_requests(self):
+        state = PoolUpdateState()
+        generations = [state.request() for _ in range(4)]
+        for generation in generations[:-1]:
+            self.assertFalse(state.commit(generation, [str(generation)]))
+        self.assertTrue(state.commit(generations[-1], ["final.pdf"]))
+        self.assertEqual(state.paths, ["final.pdf"])
 
 
 if __name__ == "__main__": unittest.main()

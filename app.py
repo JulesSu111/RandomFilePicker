@@ -17,6 +17,49 @@ def explorer_select_command(path: str) -> list[str]:
     return ["explorer.exe", "/select,", str(Path(path))]
 
 
+class PoolUpdateState:
+    """Prevents older asynchronous scans from committing their result."""
+    def __init__(self) -> None:
+        self.generation = 0
+        self.updating = False
+        self.paths: list[str] = []
+
+    def request(self) -> int:
+        self.generation += 1
+        self.updating = True
+        return self.generation
+
+    def commit(self, generation: int, paths: list[str]) -> bool:
+        if generation != self.generation:
+            return False
+        self.paths = list(paths)
+        self.updating = False
+        return True
+
+    def can_select(self) -> bool:
+        return not self.updating and bool(self.paths)
+
+
+class Tooltip:
+    def __init__(self, widget: tk.Widget, text) -> None:
+        self.widget, self.text, self.window = widget, text, None
+        widget.bind("<Enter>", self.show, add=True)
+        widget.bind("<Leave>", self.hide, add=True)
+
+    def show(self, _event=None) -> None:
+        value = self.text()
+        if not value or self.window:
+            return
+        self.window = tk.Toplevel(self.widget)
+        self.window.wm_overrideredirect(True)
+        self.window.wm_geometry(f"+{self.widget.winfo_rootx() + 12}+{self.widget.winfo_rooty() + self.widget.winfo_height() + 4}")
+        ttk.Label(self.window, text=value, padding=5).pack()
+
+    def hide(self, _event=None) -> None:
+        if self.window:
+            self.window.destroy(); self.window = None
+
+
 class Localizer:
     def __init__(self, language: str) -> None:
         folder = Path(__file__).with_name("locales")
@@ -37,8 +80,9 @@ class App(ttk.Frame):
         self.cfg = load_config()
         self.i18n = Localizer(self.cfg["language"])
         self.scanner, self.picker = FileScanner(), RandomPicker()
-        self.scanning = False
+        self.pool_state = PoolUpdateState()
         self.paths: list[str] = []
+        self.pending_scan = None
         self._variables()
         self.build()
         self.pack(fill="both", expand=True)
@@ -110,7 +154,13 @@ class App(ttk.Frame):
 
         self.eligible_label = ttk.Label(self); self.eligible_label.grid(sticky="w", pady=(8, 0))
         self.available_label = ttk.Label(self); self.available_label.grid(sticky="w")
-        ttk.Button(self, text=self.t("button.random_open"), command=self.random_open).grid(sticky="ew", pady=8)
+        ttk.Style(self.master).configure("Primary.TButton", font=("TkDefaultFont", 13, "bold"), padding=(16, 12))
+        self.random_area = ttk.Frame(self); self.random_area.grid(sticky="ew", pady=(14, 14)); self.random_area.columnconfigure(0, weight=1)
+        self.random_button = ttk.Button(self.random_area, text=self.t("button.random_open"), command=self.random_open, style="Primary.TButton")
+        self.random_button.grid(row=0, column=0, sticky="ew", padx=30)
+        self.random_tooltip = Tooltip(self.random_area, self.random_tooltip_text)
+        self.random_button.bind("<Enter>", self.random_tooltip.show, add=True)
+        self.random_button.bind("<Leave>", self.random_tooltip.hide, add=True)
         behavior = ttk.Frame(self); behavior.grid(sticky="w")
         ttk.Label(behavior, text=self.t("label.open_behavior")).grid(row=0, column=0)
         for i, (key, value) in enumerate((("behavior.open", "open"), ("behavior.explorer", "explorer"), ("behavior.both", "both")), 1):
@@ -124,12 +174,13 @@ class App(ttk.Frame):
         ttk.Label(lang, text=self.t("label.language")).grid(row=0, column=0)
         ttk.Combobox(lang, textvariable=self.language_var, values=["zh_CN", "en_US"], width=8, state="readonly").grid(row=0, column=1)
         self.language_var.trace_add("write", lambda *_: self.change_language())
+        self.root_var.trace_add("write", lambda *_: self.queue_refresh())
         self.update_management(); self.update_counts()
 
     def draw_extensions(self) -> None:
         for child in self.type_frame.winfo_children(): child.destroy()
         for index, (ext, var) in enumerate(self.extension_vars.items()):
-            ttk.Checkbutton(self.type_frame, text=ext.upper().lstrip("."), variable=var, command=self.refresh).grid(row=index // 6, column=index % 6, padx=4, sticky="w")
+            ttk.Checkbutton(self.type_frame, text=ext.upper().lstrip("."), variable=var, command=self.queue_refresh).grid(row=index // 6, column=index % 6, padx=4, sticky="w")
 
     def custom_extensions(self) -> list[str]:
         return [x for x in self.extension_vars if x not in DEFAULT_EXTENSIONS]
@@ -150,20 +201,41 @@ class App(ttk.Frame):
     def scope_values(self) -> dict[str, bool]:
         return {name: value.get() for name, value in self.scope_vars.items()}
 
+    def queue_refresh(self) -> None:
+        generation = self.begin_pool_update()
+        if self.pending_scan is not None:
+            self.master.after_cancel(self.pending_scan)
+        self.pending_scan = self.master.after(200, lambda: self.start_scan(generation))
+
     def refresh(self) -> None:
-        if self.scanning: return
+        generation = self.begin_pool_update()
+        if self.pending_scan is not None:
+            self.master.after_cancel(self.pending_scan); self.pending_scan = None
+        self.start_scan(generation)
+
+    def begin_pool_update(self) -> int:
+        generation = self.pool_state.request()
+        self.random_button.state(["disabled"])
+        self.update_counts()
+        return generation
+
+    def start_scan(self, generation: int) -> None:
+        self.pending_scan = None
+        if generation != self.pool_state.generation:
+            return
         root = self.root_var.get()
         if not os.path.isdir(root):
-            self.paths = []; self.picker.set_pool([]); self.update_counts(); return
-        self.scanning = True
+            self.finish_scan(generation, []); return
         extensions, scopes = self.selected_extensions(), self.scope_values()
         def work() -> None:
             found = self.scanner.scan(root, extensions, set(self.cfg["excluded_folders"]), set(self.cfg["excluded_files"]), self.cfg["filename_filters"], scopes)
-            self.master.after(0, lambda: self.finish_scan(found))
+            self.master.after(0, lambda: self.finish_scan(generation, found))
         threading.Thread(target=work, daemon=True).start()
 
-    def finish_scan(self, paths: list[str]) -> None:
-        self.paths = paths; self.picker.set_pool(paths); self.scanning = False
+    def finish_scan(self, generation: int, paths: list[str]) -> None:
+        if not self.pool_state.commit(generation, paths):
+            return
+        self.paths = self.pool_state.paths; self.picker.set_pool(self.paths)
         self.draw_scopes(); self.update_counts()
 
     def draw_scopes(self) -> None:
@@ -175,13 +247,25 @@ class App(ttk.Frame):
         old = self.scope_values()
         self.scope_vars = {name: tk.BooleanVar(value=old.get(name, self.cfg["scope_enabled"].get(name, True))) for name in names}
         for i, (name, var) in enumerate(self.scope_vars.items()):
-            ttk.Checkbutton(self.scope_frame, text=name, variable=var, command=self.refresh).grid(row=i // 4, column=i % 4, padx=4, sticky="w")
+            ttk.Checkbutton(self.scope_frame, text=name, variable=var, command=self.queue_refresh).grid(row=i // 4, column=i % 4, padx=4, sticky="w")
 
     def update_counts(self) -> None:
+        if self.pool_state.updating:
+            self.eligible_label.config(text=self.t("status.updating"))
+            self.available_label.config(text="")
+            return
         available = self.picker.candidates(self.cfg["history"], self.recent_n()) if self.mode_var.get() == "recent" else [p for p in self.paths if os.path.isfile(p)]
         self.eligible_label.config(text=self.t("status.eligible", count=len(self.paths)))
         self.available_label.config(text=self.t("status.available", count=len(available)))
+        self.random_button.state(["!disabled"] if available else ["disabled"])
         self.update_management()
+
+    def random_tooltip_text(self) -> str:
+        if self.pool_state.updating:
+            return self.t("tooltip.updating")
+        if not self.pool_state.can_select():
+            return self.t("tooltip.empty")
+        return ""
 
     def update_management(self) -> None:
         self.folder_label.config(text=self.t("label.excluded_folders", count=len(self.cfg["excluded_folders"])))
@@ -190,27 +274,29 @@ class App(ttk.Frame):
 
     def set_extensions(self, value: bool) -> None:
         for var in self.extension_vars.values(): var.set(value)
-        self.refresh()
+        self.queue_refresh()
 
     def defaults(self) -> None:
         for ext, var in self.extension_vars.items(): var.set(ext in DEFAULT_EXTENSIONS)
-        self.refresh()
+        self.queue_refresh()
 
     def add_extension(self) -> None:
         ext = normalize_extension(self.custom_var.get())
         if not ext or ext == ".": messagebox.showwarning(self.t("app.title"), self.t("message.bad_extension")); return
         if ext not in self.extension_vars: self.extension_vars[ext] = tk.BooleanVar(value=True)
-        self.custom_var.set(""); self.custom_combo.configure(values=self.custom_extensions()); self.draw_extensions(); self.refresh()
+        self.custom_var.set(""); self.custom_combo.configure(values=self.custom_extensions()); self.draw_extensions(); self.queue_refresh()
 
     def remove_extension(self) -> None:
         ext = self.custom_combo.get()
-        if ext in self.custom_extensions(): del self.extension_vars[ext]; self.custom_combo.configure(values=self.custom_extensions()); self.draw_extensions(); self.refresh()
+        if ext in self.custom_extensions(): del self.extension_vars[ext]; self.custom_combo.configure(values=self.custom_extensions()); self.draw_extensions(); self.queue_refresh()
 
     def enable_all_scopes(self) -> None:
         for value in self.scope_vars.values(): value.set(True)
-        self.refresh()
+        self.queue_refresh()
 
     def random_open(self) -> None:
+        if self.pool_state.updating or not self.pool_state.can_select():
+            return
         path = self.picker.choose(self.mode_var.get(), self.cfg["history"], self.recent_n())
         if not path: messagebox.showinfo(self.t("app.title"), self.t("message.no_files")); return
         self.open_path(path)
@@ -232,7 +318,7 @@ class App(ttk.Frame):
         path = self.last_var.get()
         if not path: messagebox.showinfo(self.t("app.title"), self.t("message.no_last")); return
         if normalized_path(path) not in {normalized_path(x) for x in self.cfg["excluded_files"]}: self.cfg["excluded_files"].append(path)
-        self.refresh()
+        self.queue_refresh()
 
     def list_dialog(self, title_key: str, values: list[str], add=None, folder=False) -> None:
         window = tk.Toplevel(self); window.title(self.t(title_key)); window.transient(self.master); window.geometry("650x350")
@@ -240,12 +326,12 @@ class App(ttk.Frame):
         def redraw(): box.delete(0, "end"); [box.insert("end", x) for x in values]
         def remove():
             for i in reversed(box.curselection()): values.pop(i)
-            redraw(); self.refresh()
+            redraw(); self.queue_refresh()
         def add_item():
             if folder:
                 value = filedialog.askdirectory(title=self.t("message.choose_excluded"), parent=window)
             else: value = simpledialog.askstring(self.t(title_key), self.t("dialog.add_filter"), parent=window)
-            if value and value not in values: values.append(value); redraw(); self.refresh()
+            if value and value not in values: values.append(value); redraw(); self.queue_refresh()
         buttons = ttk.Frame(window); buttons.pack(pady=(0, 8))
         if add is not None: ttk.Button(buttons, text=self.t(add), command=add_item).grid(row=0, column=0, padx=3)
         ttk.Button(buttons, text=self.t("button.delete"), command=remove).grid(row=0, column=1, padx=3)
