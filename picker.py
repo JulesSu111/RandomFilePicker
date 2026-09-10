@@ -52,6 +52,10 @@ class RandomPicker:
         self.pool = list(paths)
         self.shuffle_queue = []
 
+    def reset_shuffle(self) -> None:
+        self.shuffle_queue = [p for p in self.pool if os.path.isfile(p)]
+        random.shuffle(self.shuffle_queue)
+
     def candidates(self, recent_history: list[str], recent_n: int) -> list[str]:
         """All allowed files, preserving equal probability for each file."""
         if not self.pool:

@@ -33,6 +33,12 @@ class PickerTests(unittest.TestCase):
         p = RandomPicker(); p.set_pool(self.paths)
         draws = [p.choose("shuffle", [], 0) for _ in self.paths]
         self.assertEqual(set(draws), set(self.paths))
+
+    def test_reset_shuffle_starts_a_fresh_full_round(self):
+        p = RandomPicker(); p.set_pool(self.paths)
+        p.choose("shuffle", [], 0)
+        p.reset_shuffle()
+        self.assertEqual(set(p.shuffle_queue), set(self.paths))
     def test_manual_exclusion(self):
         scan = FileScanner().scan(str(self.root), {".pdf"}, set(), {self.paths[0]}, [], {})
         self.assertNotIn(self.paths[0], scan)
@@ -41,10 +47,12 @@ class PickerTests(unittest.TestCase):
         target = self.root / "settings.json"
         with patch.object(config, "config_path", return_value=target):
             data = config.load_config(); data["root"] = "C:\\资料"; data["history"] = ["C:\\资料\\一.pdf"]
+            data["recent_picker_memory"] = ["C:\\资料\\二.pdf"]
             config.save_config(data)
             restored = config.load_config()
         self.assertEqual(restored["root"], "C:\\资料")
         self.assertEqual(restored["history"], ["C:\\资料\\一.pdf"])
+        self.assertEqual(restored["recent_picker_memory"], ["C:\\资料\\二.pdf"])
 
     def test_explorer_select_keeps_switch_and_unicode_path_separate(self):
         path = "D:\\Study\\Course A\\Kapitel, Eins\\页面 17.png"

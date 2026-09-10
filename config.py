@@ -13,7 +13,7 @@ DEFAULT_EXTENSIONS = [
 DEFAULT_CONFIG = {
     "root": "", "selected_extensions": DEFAULT_EXTENSIONS, "custom_extensions": [],
     "mode": "recent", "recent_n": 50, "open_behavior": "both", "excluded_folders": [],
-    "excluded_files": [], "filename_filters": [], "history": [], "language": "zh_CN",
+    "excluded_files": [], "filename_filters": [], "history": [], "recent_picker_memory": [], "language": "zh_CN",
     "scope_enabled": {}, "geometry": "",
 }
 

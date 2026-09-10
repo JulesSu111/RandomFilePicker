@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import threading
 import tkinter as tk
@@ -90,13 +91,23 @@ class App(ttk.Frame):
         self.master.bind("<Control-r>", lambda _e: self.refresh())
         self.master.bind("<Control-h>", lambda _e: self.show_history())
         self.master.bind("<space>", self.space_open)
-        if self.cfg.get("geometry"):
-            self.master.geometry(self.cfg["geometry"])
+        self.restore_geometry()
         if self.root_var.get():
             self.refresh()
 
     def t(self, key: str, **values: object) -> str:
         return self.i18n.text(key, **values)
+
+    def restore_geometry(self) -> None:
+        saved = self.cfg.get("geometry", "")
+        match = re.match(r"(\d+)x(\d+)", saved)
+        screen_width, screen_height = self.master.winfo_screenwidth(), self.master.winfo_screenheight()
+        if match:
+            width = min(max(800, int(match.group(1))), max(800, screen_width - 80))
+            height = min(max(550, int(match.group(2))), max(550, screen_height - 80))
+            self.master.geometry(f"{width}x{height}+40+40")
+        else:
+            self.master.geometry("800x550")
 
     def _variables(self) -> None:
         c = self.cfg
@@ -114,37 +125,38 @@ class App(ttk.Frame):
 
     def build(self) -> None:
         self.master.title(self.t("app.title"))
-        self.columnconfigure(0, weight=1)
-        root = ttk.Frame(self); root.grid(sticky="ew"); root.columnconfigure(1, weight=1)
+        self.master.minsize(800, 550)
+        self.columnconfigure(0, weight=1); self.rowconfigure(1, weight=1)
+        root = ttk.Frame(self); root.grid(row=0, column=0, sticky="ew"); root.columnconfigure(1, weight=1)
         ttk.Label(root, text=self.t("label.root")).grid(row=0, column=0, sticky="w")
         ttk.Entry(root, textvariable=self.root_var).grid(row=0, column=1, sticky="ew", padx=5)
         ttk.Button(root, text=self.t("button.browse"), command=self.browse).grid(row=0, column=2)
         ttk.Button(root, text=self.t("button.refresh"), command=self.refresh).grid(row=0, column=3, padx=(5, 0))
 
-        types = ttk.LabelFrame(self, text=self.t("section.file_types"), padding=6); types.grid(sticky="ew", pady=(8, 0))
-        self.type_frame = ttk.Frame(types); self.type_frame.grid(row=0, column=0, columnspan=4, sticky="w")
+        middle = ttk.Frame(self); middle.grid(row=1, column=0, sticky="nsew", pady=(8, 0)); middle.columnconfigure(0, weight=1); middle.columnconfigure(1, weight=1)
+        left = ttk.Frame(middle); left.grid(row=0, column=0, sticky="new", padx=(0, 4)); left.columnconfigure(0, weight=1)
+        right = ttk.Frame(middle); right.grid(row=0, column=1, sticky="new", padx=(4, 0)); right.columnconfigure(0, weight=1)
+        types = ttk.LabelFrame(left, text=self.t("section.file_types"), padding=6); types.grid(row=0, column=0, sticky="ew")
+        self.type_frame = ttk.Frame(types); self.type_frame.grid(row=0, column=0, columnspan=5, sticky="w")
         self.draw_extensions()
         ttk.Button(types, text=self.t("button.select_all"), command=lambda: self.set_extensions(True)).grid(row=1, column=0, padx=2, pady=4)
         ttk.Button(types, text=self.t("button.select_none"), command=lambda: self.set_extensions(False)).grid(row=1, column=1, padx=2, pady=4)
         ttk.Button(types, text=self.t("button.defaults"), command=self.defaults).grid(row=1, column=2, padx=2, pady=4)
         ttk.Label(types, text=self.t("label.custom")).grid(row=2, column=0, sticky="w")
-        ttk.Entry(types, textvariable=self.custom_var, width=16).grid(row=2, column=1, sticky="w")
+        ttk.Entry(types, textvariable=self.custom_var, width=13).grid(row=2, column=1, sticky="ew")
         ttk.Button(types, text=self.t("button.add"), command=self.add_extension).grid(row=2, column=2, padx=2)
-        self.custom_combo = ttk.Combobox(types, values=self.custom_extensions(), state="readonly", width=14)
-        self.custom_combo.grid(row=2, column=3, sticky="w")
+        self.custom_combo = ttk.Combobox(types, values=self.custom_extensions(), state="readonly", width=11); self.custom_combo.grid(row=2, column=3, sticky="ew")
         ttk.Button(types, text=self.t("button.remove"), command=self.remove_extension).grid(row=2, column=4, padx=2)
+        scope = ttk.LabelFrame(left, text=self.t("section.scope"), padding=6); scope.grid(row=1, column=0, sticky="ew", pady=(8, 0)); scope.columnconfigure(0, weight=1)
+        self.scope_summary = ttk.Label(scope); self.scope_summary.grid(row=0, column=0, sticky="w")
+        ttk.Button(scope, text=self.t("button.manage_scope"), command=self.manage_scope).grid(row=0, column=1, sticky="e")
 
-        scope = ttk.LabelFrame(self, text=self.t("section.scope"), padding=6); scope.grid(sticky="ew", pady=(8, 0))
-        self.scope_frame = ttk.Frame(scope); self.scope_frame.grid(row=0, column=0, sticky="w")
-        ttk.Button(scope, text=self.t("button.scope_all"), command=self.enable_all_scopes).grid(row=1, column=0, sticky="w", pady=(4, 0))
-
-        mode = ttk.LabelFrame(self, text=self.t("section.random_mode"), padding=6); mode.grid(sticky="ew", pady=(8, 0))
+        mode = ttk.LabelFrame(right, text=self.t("section.random_mode"), padding=6); mode.grid(row=0, column=0, sticky="ew")
         ttk.Radiobutton(mode, text=self.t("mode.pure"), variable=self.mode_var, value="pure", command=self.update_counts).grid(row=0, column=0, sticky="w")
         ttk.Radiobutton(mode, text=self.t("mode.recent"), variable=self.mode_var, value="recent", command=self.update_counts).grid(row=1, column=0, sticky="w")
         ttk.Spinbox(mode, from_=0, to=1000000, textvariable=self.recent_var, width=7, command=self.update_counts).grid(row=1, column=1, padx=5)
         ttk.Radiobutton(mode, text=self.t("mode.shuffle"), variable=self.mode_var, value="shuffle", command=self.update_counts).grid(row=2, column=0, sticky="w")
-
-        tools = ttk.LabelFrame(self, text=self.t("section.exclusions"), padding=6); tools.grid(sticky="ew", pady=(8, 0))
+        tools = ttk.LabelFrame(right, text=self.t("section.exclusions"), padding=6); tools.grid(row=1, column=0, sticky="ew", pady=(8, 0)); tools.columnconfigure(0, weight=1)
         self.folder_label = ttk.Label(tools); self.folder_label.grid(row=0, column=0, sticky="w")
         ttk.Button(tools, text=self.t("button.manage"), command=self.manage_folders).grid(row=0, column=1, padx=5)
         self.file_label = ttk.Label(tools); self.file_label.grid(row=1, column=0, sticky="w")
@@ -152,30 +164,28 @@ class App(ttk.Frame):
         self.filter_label = ttk.Label(tools); self.filter_label.grid(row=2, column=0, sticky="w")
         ttk.Button(tools, text=self.t("button.manage"), command=self.manage_filters).grid(row=2, column=1, padx=5)
 
-        self.eligible_label = ttk.Label(self); self.eligible_label.grid(sticky="w", pady=(8, 0))
-        self.available_label = ttk.Label(self); self.available_label.grid(sticky="w")
+        bottom = ttk.Frame(self); bottom.grid(row=2, column=0, sticky="ew", pady=(8, 0)); bottom.columnconfigure(0, weight=1)
+        self.eligible_label = ttk.Label(bottom); self.eligible_label.grid(row=0, column=0, sticky="w")
+        status = ttk.Frame(bottom); status.grid(row=1, column=0, sticky="ew"); status.columnconfigure(0, weight=1)
+        self.available_label = ttk.Label(status); self.available_label.grid(row=0, column=0, sticky="w")
+        self.reset_button = ttk.Button(status, text=self.t("button.reset_picker"), command=self.reset_picker_state); self.reset_button.grid(row=0, column=1, sticky="e")
         ttk.Style(self.master).configure("Primary.TButton", font=("TkDefaultFont", 13, "bold"), padding=(16, 12))
-        self.random_area = ttk.Frame(self); self.random_area.grid(sticky="ew", pady=(14, 14)); self.random_area.columnconfigure(0, weight=1)
-        self.random_button = ttk.Button(self.random_area, text=self.t("button.random_open"), command=self.random_open, style="Primary.TButton")
-        self.random_button.grid(row=0, column=0, sticky="ew", padx=30)
-        self.random_tooltip = Tooltip(self.random_area, self.random_tooltip_text)
-        self.random_button.bind("<Enter>", self.random_tooltip.show, add=True)
-        self.random_button.bind("<Leave>", self.random_tooltip.hide, add=True)
-        behavior = ttk.Frame(self); behavior.grid(sticky="w")
+        self.random_area = ttk.Frame(bottom); self.random_area.grid(row=2, column=0, sticky="ew", pady=(12, 10)); self.random_area.columnconfigure(0, weight=1)
+        self.random_button = ttk.Button(self.random_area, text=self.t("button.random_open"), command=self.random_open, style="Primary.TButton"); self.random_button.grid(row=0, column=0, sticky="ew", padx=50)
+        self.random_tooltip = Tooltip(self.random_area, self.random_tooltip_text); self.random_button.bind("<Enter>", self.random_tooltip.show, add=True); self.random_button.bind("<Leave>", self.random_tooltip.hide, add=True)
+        behavior = ttk.Frame(bottom); behavior.grid(row=3, column=0, sticky="w")
         ttk.Label(behavior, text=self.t("label.open_behavior")).grid(row=0, column=0)
-        for i, (key, value) in enumerate((("behavior.open", "open"), ("behavior.explorer", "explorer"), ("behavior.both", "both")), 1):
-            ttk.Radiobutton(behavior, text=self.t(key), variable=self.behavior_var, value=value).grid(row=0, column=i, padx=3)
-        last = ttk.Frame(self); last.grid(sticky="ew", pady=(8, 0)); last.columnconfigure(1, weight=1)
+        for i, (key, value) in enumerate((("behavior.open", "open"), ("behavior.explorer", "explorer"), ("behavior.both", "both")), 1): ttk.Radiobutton(behavior, text=self.t(key), variable=self.behavior_var, value=value).grid(row=0, column=i, padx=3)
+        last = ttk.Frame(bottom); last.grid(row=4, column=0, sticky="ew", pady=(6, 0)); last.columnconfigure(1, weight=1)
         ttk.Label(last, text=self.t("label.last")).grid(row=0, column=0, sticky="nw")
-        ttk.Label(last, textvariable=self.last_var, wraplength=600).grid(row=0, column=1, sticky="w")
-        ttk.Button(last, text=self.t("button.history"), command=self.show_history).grid(row=1, column=0, pady=4)
-        ttk.Button(last, text=self.t("button.never"), command=self.never).grid(row=1, column=1, sticky="w", pady=4)
-        lang = ttk.Frame(self); lang.grid(sticky="e")
+        ttk.Label(last, textvariable=self.last_var, wraplength=780).grid(row=0, column=1, sticky="w")
+        ttk.Button(last, text=self.t("button.history"), command=self.show_history).grid(row=1, column=0, pady=3)
+        ttk.Button(last, text=self.t("button.never"), command=self.never).grid(row=1, column=1, sticky="w", pady=3)
+        lang = ttk.Frame(bottom); lang.grid(row=5, column=0, sticky="e")
         ttk.Label(lang, text=self.t("label.language")).grid(row=0, column=0)
         ttk.Combobox(lang, textvariable=self.language_var, values=["zh_CN", "en_US"], width=8, state="readonly").grid(row=0, column=1)
-        self.language_var.trace_add("write", lambda *_: self.change_language())
-        self.root_var.trace_add("write", lambda *_: self.queue_refresh())
-        self.update_management(); self.update_counts()
+        self.language_var.trace_add("write", lambda *_: self.change_language()); self.root_var.trace_add("write", lambda *_: self.queue_refresh())
+        self.update_management(); self.update_scope_summary(); self.update_counts()
 
     def draw_extensions(self) -> None:
         for child in self.type_frame.winfo_children(): child.destroy()
@@ -239,25 +249,53 @@ class App(ttk.Frame):
         self.draw_scopes(); self.update_counts()
 
     def draw_scopes(self) -> None:
-        for child in self.scope_frame.winfo_children(): child.destroy()
         root = self.root_var.get()
         names = []
         try: names = [p.name for p in Path(root).iterdir() if p.is_dir()]
         except OSError: pass
         old = self.scope_values()
         self.scope_vars = {name: tk.BooleanVar(value=old.get(name, self.cfg["scope_enabled"].get(name, True))) for name in names}
-        for i, (name, var) in enumerate(self.scope_vars.items()):
-            ttk.Checkbutton(self.scope_frame, text=name, variable=var, command=self.queue_refresh).grid(row=i // 4, column=i % 4, padx=4, sticky="w")
+        self.update_scope_summary()
+
+    def update_scope_summary(self) -> None:
+        if not hasattr(self, "scope_summary"):
+            return
+        total = len(self.scope_vars)
+        self.scope_summary.config(text=self.t("label.scope_summary", enabled=sum(var.get() for var in self.scope_vars.values()), total=total))
+
+    def manage_scope(self) -> None:
+        window = tk.Toplevel(self); window.title(self.t("dialog.scope.title")); window.transient(self.master); window.geometry("620x500"); window.minsize(420, 300)
+        outer = ttk.Frame(window, padding=8); outer.pack(fill="both", expand=True)
+        canvas = tk.Canvas(outer, highlightthickness=0); scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        choices = ttk.Frame(canvas)
+        choices.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        choices_id = canvas.create_window((0, 0), window=choices, anchor="nw")
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(choices_id, width=event.width))
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew"); scrollbar.grid(row=0, column=1, sticky="ns"); outer.rowconfigure(0, weight=1); outer.columnconfigure(0, weight=1)
+        def changed() -> None:
+            self.update_scope_summary(); self.queue_refresh()
+        for row, (name, var) in enumerate(self.scope_vars.items()):
+            ttk.Checkbutton(choices, text=name, variable=var, command=changed).grid(row=row, column=0, sticky="w", padx=4, pady=2)
+        buttons = ttk.Frame(outer); buttons.grid(row=1, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        def set_all(value: bool) -> None:
+            for var in self.scope_vars.values(): var.set(value)
+            self.update_scope_summary(); self.queue_refresh()
+        ttk.Button(buttons, text=self.t("button.select_all"), command=lambda: set_all(True)).grid(row=0, column=0, padx=3)
+        ttk.Button(buttons, text=self.t("button.select_none"), command=lambda: set_all(False)).grid(row=0, column=1, padx=3)
+        ttk.Button(buttons, text=self.t("button.close"), command=window.destroy).grid(row=0, column=2, padx=3)
 
     def update_counts(self) -> None:
         if self.pool_state.updating:
             self.eligible_label.config(text=self.t("status.updating"))
             self.available_label.config(text="")
+            self.reset_button.state(["disabled"])
             return
-        available = self.picker.candidates(self.cfg["history"], self.recent_n()) if self.mode_var.get() == "recent" else [p for p in self.paths if os.path.isfile(p)]
+        available = self.picker.candidates(self.cfg["recent_picker_memory"], self.recent_n()) if self.mode_var.get() == "recent" else [p for p in self.paths if os.path.isfile(p)]
         self.eligible_label.config(text=self.t("status.eligible", count=len(self.paths)))
         self.available_label.config(text=self.t("status.available", count=len(available)))
         self.random_button.state(["!disabled"] if available else ["disabled"])
+        self.reset_button.state(["!disabled"] if self.mode_var.get() in ("recent", "shuffle") else ["disabled"])
         self.update_management()
 
     def random_tooltip_text(self) -> str:
@@ -292,12 +330,12 @@ class App(ttk.Frame):
 
     def enable_all_scopes(self) -> None:
         for value in self.scope_vars.values(): value.set(True)
-        self.queue_refresh()
+        self.update_scope_summary(); self.queue_refresh()
 
     def random_open(self) -> None:
         if self.pool_state.updating or not self.pool_state.can_select():
             return
-        path = self.picker.choose(self.mode_var.get(), self.cfg["history"], self.recent_n())
+        path = self.picker.choose(self.mode_var.get(), self.cfg["recent_picker_memory"], self.recent_n())
         if not path: messagebox.showinfo(self.t("app.title"), self.t("message.no_files")); return
         self.open_path(path)
 
@@ -306,9 +344,23 @@ class App(ttk.Frame):
             behavior = self.behavior_var.get()
             if behavior in ("open", "both"): os.startfile(path)
             if behavior in ("explorer", "both"): subprocess.Popen(explorer_select_command(path))
+            self.cfg["recent_picker_memory"] = [path] + [p for p in self.cfg["recent_picker_memory"] if normalized_path(p) != normalized_path(path)]
+            self.cfg["recent_picker_memory"] = self.cfg["recent_picker_memory"][:max(100, self.recent_n())]
             self.cfg["history"] = [path] + [p for p in self.cfg["history"] if normalized_path(p) != normalized_path(path)]
             self.cfg["history"] = self.cfg["history"][:50]; self.last_var.set(path); self.update_counts()
         except OSError as error: messagebox.showerror(self.t("app.title"), self.t("message.error", error=str(error)))
+
+    def reset_picker_state(self) -> None:
+        mode = self.mode_var.get()
+        if self.pool_state.updating or mode not in ("recent", "shuffle"):
+            return
+        if not messagebox.askyesno(self.t("dialog.confirm.title"), self.t("message.confirm_reset_picker"), parent=self.master):
+            return
+        if mode == "recent":
+            self.cfg["recent_picker_memory"] = []
+        else:
+            self.picker.reset_shuffle()
+        self.update_counts()
 
     def space_open(self, event: tk.Event) -> str | None:
         if isinstance(event.widget, (ttk.Entry, ttk.Spinbox, ttk.Combobox, tk.Entry, tk.Text)): return None
