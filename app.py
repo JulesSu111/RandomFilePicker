@@ -12,6 +12,11 @@ from config import DEFAULT_EXTENSIONS, load_config, save_config
 from picker import FileScanner, RandomPicker, normalize_extension, normalized_path
 
 
+def explorer_select_command(path: str) -> list[str]:
+    """Build Explorer's /select command without merging the switch and path."""
+    return ["explorer.exe", "/select,", str(Path(path))]
+
+
 class Localizer:
     def __init__(self, language: str) -> None:
         folder = Path(__file__).with_name("locales")
@@ -214,7 +219,7 @@ class App(ttk.Frame):
         try:
             behavior = self.behavior_var.get()
             if behavior in ("open", "both"): os.startfile(path)
-            if behavior in ("explorer", "both"): subprocess.Popen(["explorer.exe", "/select," + path])
+            if behavior in ("explorer", "both"): subprocess.Popen(explorer_select_command(path))
             self.cfg["history"] = [path] + [p for p in self.cfg["history"] if normalized_path(p) != normalized_path(path)]
             self.cfg["history"] = self.cfg["history"][:50]; self.last_var.set(path); self.update_counts()
         except OSError as error: messagebox.showerror(self.t("app.title"), self.t("message.error", error=str(error)))

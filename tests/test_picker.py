@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import config
+from app import explorer_select_command
 from picker import FileScanner, RandomPicker, normalize_extension
 
 
@@ -44,6 +45,10 @@ class PickerTests(unittest.TestCase):
             restored = config.load_config()
         self.assertEqual(restored["root"], "C:\\资料")
         self.assertEqual(restored["history"], ["C:\\资料\\一.pdf"])
+
+    def test_explorer_select_keeps_switch_and_unicode_path_separate(self):
+        path = "D:\\Study\\Course A\\Kapitel, Eins\\页面 17.png"
+        self.assertEqual(explorer_select_command(path), ["explorer.exe", "/select,", path])
 
 
 if __name__ == "__main__": unittest.main()
